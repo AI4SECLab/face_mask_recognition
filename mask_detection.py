@@ -192,10 +192,21 @@ import pickle
 # 		return ([-1],prob[0][result[0]])
 # return (result[0],prob[0][result[0]])'''
 def mask_detection(is_2_write=False,save_path=None):
-    from mask_train import SiameseNetwork, get_image_tensor
+    from mask_train import ArcMarginModel, get_image_tensor
     import torch
     import os
     from torchvision import transforms
+    import torch.nn.functional as F
+
+    # Initialize encoder first
+    encoder = LabelEncoder()
+    encoder.classes_ = np.load('./classes.npy')
+
+    # Then load ArcFace model with correct number of classes
+    num_classes = len(encoder.classes_)
+    model = ArcMarginModel(num_classes)
+    model.load_state_dict(torch.load('./arcface_model.pth'))
+    model.eval()
 
     #----var
     pb_path = "face_mask_detection.pb"
@@ -230,13 +241,6 @@ def mask_detection(is_2_write=False,save_path=None):
     print("model_shape = ", model_shape)
     detection_bboxes = node_dict['detection_bboxes']
     detection_scores = node_dict['detection_scores']
-
-    # Load Siamese model instead of SVM
-    model = SiameseNetwork()
-    model.load_state_dict(torch.load('./siamese_model.pth'))
-    model.eval()
-    encoder = LabelEncoder()
-    encoder.classes_ = np.load('./classes.npy')
 
     # Load reference features for each person
     reference_features = {}
@@ -298,19 +302,19 @@ def mask_detection(is_2_write=False,save_path=None):
                 image_tensor = preprocess(image_crop).unsqueeze(0)
                 
                 with torch.no_grad():
-                    current_features = model.forward_one(image_tensor)
-                    current_features = current_features.cpu().numpy()
+                    current_features = model(image_tensor)
+                    current_features = F.normalize(current_features).cpu().numpy()
 
-                # Find closest match
-                min_dist = float('inf')
+                # Find closest match using cosine similarity
                 person_name = "Unknown"
-                threshold = 1.7  # Adjust this threshold
+                max_similarity = -1
+                threshold = 0.5  # Adjust this threshold
 
                 for ref_person, ref_features in reference_features.items():
-                    dist = np.linalg.norm(current_features - ref_features)
-                    print(ref_person, dist)
-                    if dist < min_dist and dist < threshold:
-                        min_dist = dist
+                    similarity = np.dot(current_features[0], ref_features[0])
+                    # print(f'{ref_person}: {similarity}')
+                    if similarity > max_similarity and similarity > threshold:
+                        max_similarity = similarity
                         person_name = ref_person
 
                 if class_id == 0:

@@ -118,41 +118,46 @@ def extract_feature_from_image(image, resnet):
     image_tensor = torch.stack([preprocess(image)])
     result = extract_features(image_tensor, resnet)
     return result
-
-class SiameseNetwork(nn.Module):
-    def __init__(self):
-        super(SiameseNetwork, self).__init__()
-        self.resnet = models.resnet50(pretrained=True)
-        # Remove the last fully connected layer
-        self.resnet = nn.Sequential(*(list(self.resnet.children())[:-1]))
-        # Add projection head
-        self.fc = nn.Sequential(
-            nn.Linear(2048, 512),
-            nn.ReLU(),
-            nn.Linear(512, 128)
+import math
+class ArcMarginModel(nn.Module):
+    def __init__(self, num_classes, emb_size=512, s=30.0, m=0.50):
+        super(ArcMarginModel, self).__init__()
+        self.backbone = models.resnet50(pretrained=True)
+        # Modify last layer
+        self.backbone.fc = nn.Sequential(
+            nn.Linear(2048, emb_size),
+            nn.BatchNorm1d(emb_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(emb_size, emb_size)
         )
+        self.margin = nn.Parameter(torch.FloatTensor([m]))
+        self.scale = s
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, emb_size))
+        nn.init.xavier_uniform_(self.weight)
+
+    def forward(self, x, label=None):
+        x = self.backbone(x)
+        x = F.normalize(x)
+        w = F.normalize(self.weight)
         
-    def forward_one(self, x):
-        x = self.resnet(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
-        return x
-    
-    def forward(self, x1, x2):
-        out1 = self.forward_one(x1)
-        out2 = self.forward_one(x2)
-        return out1, out2
-
-class ContrastiveLoss(nn.Module):
-    def __init__(self, margin=2.0):
-        super(ContrastiveLoss, self).__init__()
-        self.margin = margin
-
-    def forward(self, output1, output2, label):
-        euclidean_distance = F.pairwise_distance(output1, output2)
-        loss = torch.mean((1-label) * torch.pow(euclidean_distance, 2) +
-                         label * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
-        return loss
+        if label is None:  # For inference
+            return x
+            
+        cosine = F.linear(x, w)
+        sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
+        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+        
+        one_hot = torch.zeros_like(cosine)
+        one_hot.scatter_(1, label.view(-1, 1), 1)
+        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        output *= self.scale
+        
+        return output
 
 def create_pairs(X, y):
     pairs = []
@@ -168,6 +173,7 @@ def create_pairs(X, y):
         while idx2 == idx1:
             # print(idx1, idx2, len(class_indices[current_class]) + 1)
             idx2 = (idx2 + 1) % (len(class_indices[current_class]) + 1)
+            # idx2 = random.choice(class_indices[current_class])
         pairs.append([idx1, idx2])  # Store indices instead of actual images
         labels.append(0.0)
         
@@ -187,16 +193,12 @@ def train(training_dir, pb_path, node_dict):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Using device:", device)
 
-    resnet = get_resnet()
-    X, y = [], []
-    
-    # Add progress bar for data loading
+    # Load and process images
     print("Loading and processing images:")
+    X, y = [], []
     person_folders = [f for f in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, f))]
     for person_name in tqdm(person_folders, desc="Processing persons"):
         person_folder = os.path.join(training_dir, person_name)
-        
-        # Get first valid face image
         for image_path in image_files_in_folder(person_folder):
             image = cv2.imread(image_path)
             face = face_detection(image, sess, node_dict)
@@ -206,78 +208,83 @@ def train(training_dir, pb_path, node_dict):
                 y.append(person_name)
                 break  # Only take first valid image
 
-    import random
-    # Chuyển danh sách thành numpy array
     X = np.array(X)
     y = np.array(y)
-
-    image_tensor = get_image_tensor(X)
-    print(image_tensor.shape)
-    X = extract_features(image_tensor, resnet)
-    print(X[1])
-    combined = list(zip(X, y))
-    random.shuffle(combined)
     
-    X[:], y[:] = zip(*combined)
+    # Data preprocessing
+    train_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.RandomAffine(0, translate=(0.1, 0.1)),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.Resize((128, 128)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    ])
+
+    # Convert labels
     encoder = LabelEncoder()
     y_encoded = encoder.fit_transform(y)
-    
     np.save('./classes.npy', encoder.classes_)
-    
-    pairs, pair_labels = create_pairs(image_tensor, y_encoded)
-    
-    # Create model and optimizer
-    model = SiameseNetwork().to(device)
-    criterion = ContrastiveLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-    
-    # Training loop
+
+    # Create and train model
+    num_classes = len(np.unique(y))
+    model = ArcMarginModel(num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
+
     n_epochs = 20
     batch_size = 32
-    model.train()
-    
+    best_loss = float('inf')
+
     print("\nStarting training:")
     for epoch in tqdm(range(n_epochs), desc="Epochs"):
+        model.train()
         total_loss = 0
-        batch_pbar = tqdm(range(0, len(pairs), batch_size), desc=f"Batch", leave=False)
+        batch_indices = list(range(0, len(X), batch_size))
+        random.shuffle(batch_indices)
+        
+        batch_pbar = tqdm(batch_indices, desc=f"Batch", leave=False)
         for i in batch_pbar:
-            batch_pairs = pairs[i:i+batch_size]
-            batch_labels = pair_labels[i:i+batch_size]
+            batch_X = X[i:i+batch_size]
+            batch_y = y_encoded[i:i+batch_size]
             
-            # Use stored indices to get tensors from image_tensor
-            img1 = torch.stack([image_tensor[p[0]] for p in batch_pairs]).to(device)
-            img2 = torch.stack([image_tensor[p[1]] for p in batch_pairs]).to(device)
-            labels = torch.FloatTensor(batch_labels).to(device)
+            # Apply transformations to images
+            inputs = torch.stack([train_transform(x) for x in batch_X]).to(device)
+            labels = torch.LongTensor(batch_y).to(device)
             
             optimizer.zero_grad()
-            output1, output2 = model(img1, img2)
-            loss = criterion(output1, output2, labels)
+            outputs = model(inputs, labels)
+            loss = criterion(outputs, labels)
             
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
             
-            # Update progress bar with current loss
             batch_pbar.set_postfix({"Loss": f"{loss.item():.4f}"})
         
-        avg_loss = total_loss/len(pairs)
+        scheduler.step()
+        avg_loss = total_loss/len(batch_indices)
         tqdm.write(f'Epoch {epoch+1}, Average Loss: {avg_loss:.4f}')
-    
-    # Save model
-    torch.save(model.state_dict(), './siamese_model.pth')
-    
-    # Save reference features for each identity
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            torch.save(model.state_dict(), './arcface_model.pth')
+
+    # Save reference features
     if not os.path.exists('./reference_features'):
         os.makedirs('./reference_features')
         
     model.eval()
     with torch.no_grad():
         for person_name in encoder.classes_:
-            person_idx = np.where(y == person_name)[0][0]  # Get first image of person
-            person_tensor = image_tensor[person_idx].unsqueeze(0).to(device)
-            features = model.forward_one(person_tensor)
+            person_idx = np.where(y == person_name)[0][0]
+            person_tensor = transforms.ToTensor()(X[person_idx]).unsqueeze(0).to(device)
+            features = model(person_tensor)
             np.save(f'./reference_features/{person_name}.npy', features.cpu().numpy())
-    
+
     return model
 
 def extract_feature_from_image(image, model):
