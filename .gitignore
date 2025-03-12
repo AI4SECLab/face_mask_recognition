@@ -2,6 +2,10 @@ reference_features/
 training_dataset/
 *.sav
 *.pth
+*.npy
+*.png
+*.pb
+*.pkl
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

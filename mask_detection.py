@@ -6,7 +6,9 @@ from tensorflow.compat.v1 import gfile
 import numpy as np
 import pickle
 from sklearn.preprocessing import LabelEncoder
-
+import os
+import torch
+from siamese_network import SiameseNetwork
 
 def model_restore_from_pb(pb_path,node_dict):
     config = tf.ConfigProto(log_device_placement=True,
@@ -27,6 +29,7 @@ def model_restore_from_pb(pb_path,node_dict):
 
 def video_init(is_2_write=False,save_path=None):
     writer = None
+    # cap = cv2.VideoCapture("rtsp://10.0.40.121/live/ch00_0", cv2.CAP_FFMPEG)
     cap = cv2.VideoCapture(0)
     height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)#default 640x480
     width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
@@ -55,7 +58,6 @@ def video_init(is_2_write=False,save_path=None):
         if save_path is None:
             save_path = 'demo.avi'
         writer = cv2.VideoWriter(save_path, fourcc, 20, (int(width), int(height)))
-
     return cap,height,width,writer
 
 def generate_anchors(feature_map_sizes, anchor_sizes, anchor_ratios, offset=0.5):
@@ -191,22 +193,34 @@ import pickle
 # 	if(prob[0][result[0]]<=threshold):
 # 		return ([-1],prob[0][result[0]])
 # return (result[0],prob[0][result[0]])'''
-def mask_detection(is_2_write=False,save_path=None):
+def preprocess_face(face_img, size=(224, 224)):
+    """Preprocess face for Siamese network"""
+    face = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+    face = cv2.resize(face, size)
+    face_tensor = torch.FloatTensor(face).permute(2, 0, 1).unsqueeze(0) / 255.0
+    return face_tensor
+
+def mask_detection(is_2_write=False, save_path=None):
     from mask_train import ArcMarginModel, get_image_tensor
     import torch
-    import os
-    from torchvision import transforms
     import torch.nn.functional as F
-
-    # Initialize encoder first
+    
+    # Initialize encoder
     encoder = LabelEncoder()
     encoder.classes_ = np.load('./classes.npy')
 
-    # Then load ArcFace model with correct number of classes
+    # Load ArcFace model
     num_classes = len(encoder.classes_)
-    model = ArcMarginModel(num_classes)
+    model = ArcMarginModel(num_classes=num_classes)
     model.load_state_dict(torch.load('./arcface_model.pth'))
     model.eval()
+
+    # Load reference features
+    reference_features = {}
+    for person_name in encoder.classes_:
+        features_path = f'./reference_features/{person_name}.npy'
+        if os.path.exists(features_path):
+            reference_features[person_name] = np.load(features_path)
 
     #----var
     pb_path = "face_mask_detection.pb"
@@ -242,12 +256,36 @@ def mask_detection(is_2_write=False,save_path=None):
     detection_bboxes = node_dict['detection_bboxes']
     detection_scores = node_dict['detection_scores']
 
-    # Load reference features for each person
-    reference_features = {}
-    for person_name in encoder.classes_:
-        features_path = f'./reference_features/{person_name}.npy'
-        if os.path.exists(features_path):
-            reference_features[person_name] = np.load(features_path)
+    # Load PCA and classifier
+    with open('face_recognition_model.pkl', 'rb') as f:
+        models = pickle.load(f)
+        pca = models['pca']
+        clf = models['classifier']
+        encoder = models['encoder']
+
+    # Initialize siamese network and move to appropriate device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    siamese_model = SiameseNetwork()
+    siamese_model.load_state_dict(torch.load('siamese_model_best.pth'))
+    siamese_model.to(device)
+    siamese_model.eval()
+
+    # Load reference embeddings
+    reference_embeddings = {}
+    for person_name in os.listdir('./training_dataset'):
+        person_dir = os.path.join('./training_dataset', person_name)
+        if os.path.isdir(person_dir):
+            embeddings = []
+            for img_path in os.listdir(person_dir):
+                if img_path.endswith(('.jpg', '.png', '.jpeg')):
+                    img = cv2.imread(os.path.join(person_dir, img_path))
+                    face_tensor = preprocess_face(img)
+                    with torch.no_grad():
+                        embedding = siamese_model.get_embeddings(face_tensor.to(device))
+                    embeddings.append(embedding.cpu())
+            if embeddings:
+                # Average all embeddings for the person
+                reference_embeddings[person_name] = torch.mean(torch.stack(embeddings), dim=0)
 
     while (cap.isOpened()):
 
@@ -281,50 +319,67 @@ def mask_detection(is_2_write=False,save_path=None):
                                                         )
             #====draw bounding box
             for idx in keep_idxs:
-                conf = float(bbox_max_scores[idx])
-                class_id = bbox_max_score_classes[idx]
-                bbox = y_bboxes[idx]
-                # clip the coordinate, avoid the value exceed the image boundary.
-                xmin = max(0, int(bbox[0] * width))
-                ymin = max(0, int(bbox[1] * height))
-                xmax = min(int(bbox[2] * width), width)
-                ymax = min(int(bbox[3] * height), height)
-                # Face recognition
-                image_crop = img_resized[ymin:ymax, xmin:xmax]
-                # Feature extract
-                
-                preprocess = transforms.Compose([
-                    transforms.ToPILImage(),
-                    transforms.Resize((128, 128)),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-                ])
-                image_tensor = preprocess(image_crop).unsqueeze(0)
-                
-                with torch.no_grad():
-                    current_features = model(image_tensor)
-                    current_features = F.normalize(current_features).cpu().numpy()
+                try:
+                    conf = float(bbox_max_scores[idx])
+                    class_id = bbox_max_score_classes[idx]
+                    bbox = y_bboxes[idx]
+                    # clip the coordinate, avoid the value exceed the image boundary.
+                    xmin = max(0, int(bbox[0] * width))
+                    ymin = max(0, int(bbox[1] * height))
+                    xmax = min(int(bbox[2] * width), width)
+                    ymax = min(int(bbox[3] * height), height)
 
-                # Find closest match using cosine similarity
-                person_name = "Unknown"
-                max_similarity = -1
-                threshold = 0.5  # Adjust this threshold
+                    # Process detected face
+                    face = img[ymin:ymax, xmin:xmax]
+                    face_tensor = preprocess_face(face).to(device)
+                    
+                    # Get embedding
+                    with torch.no_grad():
+                        face_embedding = siamese_model.get_embeddings(face_tensor)
 
-                for ref_person, ref_features in reference_features.items():
-                    similarity = np.dot(current_features[0], ref_features[0])
-                    # print(f'{ref_person}: {similarity}')
-                    if similarity > max_similarity and similarity > threshold:
-                        max_similarity = similarity
-                        person_name = ref_person
+                    # Find best match
+                    best_match = "Unknown"
+                    best_similarity = -1
+                    similarities = {}
+                    
+                    for person_name, ref_embedding in reference_embeddings.items():
+                        similarity = F.cosine_similarity(
+                            face_embedding, 
+                            ref_embedding.to(device).unsqueeze(0)
+                        ).item()
+                        similarities[person_name] = similarity
+                        
+                        if similarity > best_similarity:
+                            best_similarity = similarity
+                            best_match = person_name
 
-                if class_id == 0:
-                    color = (0, 255, 0)  # (B,G,R)
-                else:
-                    color = (0, 0, 255)  # (B,G,R)
-                if xmin < xmax and ymin < ymax :
+                    # Apply adaptive threshold
+                    threshold = 0.85  # Adjust based on your needs
+                    person_name = best_match if best_similarity > threshold else "Unknown"
+                    confidence = best_similarity
+
+                    # Display results
+                    color = (0, 255, 0) if class_id == 0 else (0, 0, 255)
+                    mask_status = "With Mask" if class_id == 0 else "No Mask"
+                    text = f"{mask_status} - {person_name}"
+                    if person_name != "Unknown":
+                        text += f" ({confidence:.2f})"
+                    
                     cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
-                    cv2.putText(img, "%s: %.2f" % (id2class[class_id] + " - " + person_name, conf), (xmin + 2, ymin - 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
+                    cv2.putText(img, text, (xmin + 2, ymin - 2),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
+
+                    # Debug information
+                    if confidence > 0.5:  # Only print meaningful matches
+                        print(f"\nDetected face similarities:")
+                        for name, sim in sorted(similarities.items(), 
+                                              key=lambda x: x[1], reverse=True)[:3]:
+                            print(f"{name}: {sim:.3f}")
+                        print(f"Selected: {person_name} ({confidence:.3f})")
+
+                except Exception as e:
+                    print(f"Error: {e}")
+                    continue
 
             #----FPS count
             if frame_count == 0:

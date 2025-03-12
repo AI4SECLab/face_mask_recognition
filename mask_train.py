@@ -12,6 +12,12 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 import random
 from tqdm import tqdm
+import timm
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 # Hàm lấy danh sách ảnh từ thư mục
 def image_files_in_folder(folder):
@@ -31,8 +37,7 @@ def face_detection(image, sess, node_dict, conf_thresh=0.5):
     detection_bboxes = node_dict['detection_bboxes']
     detection_scores = node_dict['detection_scores']
     y_bboxes_output, y_cls_output = sess.run([detection_bboxes, detection_scores],
-                                                feed_dict={tf_input: np.expand_dims(img_resized, axis=0)})
-
+                                            feed_dict={tf_input: np.expand_dims(img_resized, axis=0)})
     #remove the batch dimension, for batch is always 1 for inference.
     #====anchors config
     feature_map_sizes = [[33, 33], [17, 17], [9, 9], [5, 5], [3, 3]]
@@ -50,10 +55,10 @@ def face_detection(image, sess, node_dict, conf_thresh=0.5):
     # keep_idx is the alive bounding box after nms.
     iou_thresh = 0.4
     keep_idxs = single_class_non_max_suppression(y_bboxes,
-                                                    bbox_max_scores,
-                                                    conf_thresh=conf_thresh,
-                                                    iou_thresh=iou_thresh,
-                                                    )
+                                                bbox_max_scores,
+                                                conf_thresh=conf_thresh,
+                                                iou_thresh=iou_thresh,
+                                                )
     for idx in keep_idxs:
         conf = float(bbox_max_scores[idx])
         class_id = bbox_max_score_classes[idx]
@@ -108,26 +113,38 @@ def get_image_tensor(images):
 
     return image_tensor
 
+x = 1
 def extract_feature_from_image(image, resnet):
+    global x
     preprocess = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.Resize((128, 128)),
+        transforms.Resize((224, 224)),  # Tăng kích thước để lấy đặc trưng tốt hơn
         transforms.ToTensor(),
-        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     ])
-    image_tensor = torch.stack([preprocess(image)])
-    result = extract_features(image_tensor, resnet)
-    return result
+    image_tensor = preprocess(image).unsqueeze(0)
+    with torch.no_grad():
+        features = resnet(image_tensor)
+        features = features.squeeze().cpu().numpy()
+        # Chuẩn hóa L2 
+        # features = features / np.linalg.norm(features)
+    # plt.imshow(image)
+    # plt.show()
+    x += 1
+    if x % 100 == 0:
+        print(features)
+    # print(features)
+    return features
+
 import math
 class ArcMarginModel(nn.Module):
     def __init__(self, num_classes, emb_size=512, s=30.0, m=0.50):
         super(ArcMarginModel, self).__init__()
-        self.backbone = models.resnet50(pretrained=True)
-        # Modify last layer
-        self.backbone.fc = nn.Sequential(
-            nn.Linear(2048, emb_size),
+        self.backbone = timm.create_model('tf_efficientnet_b4', pretrained=True)
+        self.backbone.classifier = nn.Sequential(
+            nn.Linear(1792, emb_size),
             nn.BatchNorm1d(emb_size),
-            nn.ReLU(inplace=True),
+            nn.PReLU(),
             nn.Linear(emb_size, emb_size)
         )
         self.margin = nn.Parameter(torch.FloatTensor([m]))
@@ -142,162 +159,127 @@ class ArcMarginModel(nn.Module):
     def forward(self, x, label=None):
         x = self.backbone(x)
         x = F.normalize(x)
-        w = F.normalize(self.weight)
-        
-        if label is None:  # For inference
+        if label is None:  # During inference
             return x
-            
+        
+        # Compute cos(theta) and sin(theta)
+        w = F.normalize(self.weight)
         cosine = F.linear(x, w)
         sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
+        
+        # Compute cos(theta + m)
         phi = cosine * self.cos_m - sine * self.sin_m
         phi = torch.where(cosine > self.th, phi, cosine - self.mm)
         
+        # Convert label to one-hot
         one_hot = torch.zeros_like(cosine)
         one_hot.scatter_(1, label.view(-1, 1), 1)
+        
+        # Get final output
         output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
         output *= self.scale
-        
         return output
 
-def create_pairs(X, y):
-    pairs = []
-    labels = []
-    
-    n_classes = len(np.unique(y))
-    class_indices = [np.where(y == i)[0] for i in range(n_classes)]
-    
-    for idx1 in range(len(X)):
-        current_class = y[idx1]
-        # Positive pair
-        idx2 = random.choice(class_indices[current_class])
-        while idx2 == idx1:
-            # print(idx1, idx2, len(class_indices[current_class]) + 1)
-            idx2 = (idx2 + 1) % (len(class_indices[current_class]) + 1)
-            # idx2 = random.choice(class_indices[current_class])
-        pairs.append([idx1, idx2])  # Store indices instead of actual images
-        labels.append(0.0)
-        
-        # Negative pair
-        neg_class = random.randint(0, n_classes-1)
-        while neg_class == current_class:
-            neg_class = random.randint(0, n_classes-1)
-            # print(neg_class)
-        idx2 = random.choice(class_indices[neg_class])
-        pairs.append([idx1, idx2])
-        labels.append(1.0)
-    
-    return np.array(pairs), np.array(labels)
+def plot_eigenfaces(pca, h, w, n_components=8):
+    """Vẽ eigenfaces"""
+    fig, axes = plt.subplots(2, 4, figsize=(12, 8))
+    for i, ax in enumerate(axes.flat):
+        if i < n_components:
+            eigenface = pca.components_[i].reshape(h, w)
+            ax.imshow(eigenface, cmap='gray')
+            ax.axis('off')
+            ax.set_title(f'Eigenface {i+1}')
+    plt.tight_layout()
+    plt.savefig('eigenfaces.png')
+    plt.close()
 
 def train(training_dir, pb_path, node_dict):
     sess, node_dict = model_restore_from_pb(pb_path, node_dict)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("Using device:", device)
-
-    # Load and process images
-    print("Loading and processing images:")
-    X, y = [], []
-    person_folders = [f for f in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, f))]
-    for person_name in tqdm(person_folders, desc="Processing persons"):
-        person_folder = os.path.join(training_dir, person_name)
-        for image_path in image_files_in_folder(person_folder):
-            image = cv2.imread(image_path)
-            face = face_detection(image, sess, node_dict)
-            if face is not None:
-                face = cv2.resize(face, (128, 128))
-                X.append(face)
-                y.append(person_name)
-                break  # Only take first valid image
-
-    X = np.array(X)
-    y = np.array(y)
     
-    # Data preprocessing
-    train_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.RandomAffine(0, translate=(0.1, 0.1)),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.Resize((128, 128)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-    ])
-
-    # Convert labels
+    # Load ArcFace model
     encoder = LabelEncoder()
-    y_encoded = encoder.fit_transform(y)
+    encoder.classes_ = np.array([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
+    num_classes = len(encoder.classes_)
+    model = ArcMarginModel(num_classes=num_classes)
+    model.eval()
+    
+    # Save classes
     np.save('./classes.npy', encoder.classes_)
 
-    # Create and train model
-    num_classes = len(np.unique(y))
-    model = ArcMarginModel(num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=5e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
-
-    n_epochs = 20
-    batch_size = 32
-    best_loss = float('inf')
-
-    print("\nStarting training:")
-    for epoch in tqdm(range(n_epochs), desc="Epochs"):
-        model.train()
-        total_loss = 0
-        batch_indices = list(range(0, len(X), batch_size))
-        random.shuffle(batch_indices)
-        
-        batch_pbar = tqdm(batch_indices, desc=f"Batch", leave=False)
-        for i in batch_pbar:
-            batch_X = X[i:i+batch_size]
-            batch_y = y_encoded[i:i+batch_size]
-            
-            # Apply transformations to images
-            inputs = torch.stack([train_transform(x) for x in batch_X]).to(device)
-            labels = torch.LongTensor(batch_y).to(device)
-            
-            optimizer.zero_grad()
-            outputs = model(inputs, labels)
-            loss = criterion(outputs, labels)
-            
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-            
-            batch_pbar.set_postfix({"Loss": f"{loss.item():.4f}"})
-        
-        scheduler.step()
-        avg_loss = total_loss/len(batch_indices)
-        tqdm.write(f'Epoch {epoch+1}, Average Loss: {avg_loss:.4f}')
-        
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            torch.save(model.state_dict(), './arcface_model.pth')
-
-    # Save reference features
+    # Save features for each person
     if not os.path.exists('./reference_features'):
         os.makedirs('./reference_features')
-        
-    model.eval()
-    with torch.no_grad():
-        for person_name in encoder.classes_:
-            person_idx = np.where(y == person_name)[0][0]
-            person_tensor = transforms.ToTensor()(X[person_idx]).unsqueeze(0).to(device)
-            features = model(person_tensor)
-            np.save(f'./reference_features/{person_name}.npy', features.cpu().numpy())
 
+    print("Extracting reference features:")
+    for person_name in tqdm(encoder.classes_):
+        person_dir = os.path.join(training_dir, person_name)
+        for img_path in image_files_in_folder(person_dir)[:1]:  # Use first image as reference
+            image = cv2.imread(img_path)
+            face = face_detection(image, sess, node_dict)
+            if face is not None:
+                # Extract features using ArcFace
+                face_tensor = get_image_tensor([face])[0].unsqueeze(0)
+                with torch.no_grad():
+                    features = model(face_tensor)
+                    features = F.normalize(features).cpu().numpy()
+                np.save(f'./reference_features/{person_name}.npy', features)
+                break
+
+    # Prepare data for PCA
+    print("Extracting features for PCA...")
+    X_faces = []
+    y_labels = []
+    for person_name in tqdm(encoder.classes_):
+        person_dir = os.path.join(training_dir, person_name)
+        for img_path in image_files_in_folder(person_dir):
+            image = cv2.imread(img_path)
+            face = face_detection(image, sess, node_dict)
+            if face is not None:
+                # Convert to grayscale and resize
+                face_gray = cv2.cvtColor(face, cv2.COLOR_RGB2GRAY)
+                face_resized = cv2.resize(face_gray, (64, 64))
+                print(np.max(face_resized))
+                X_faces.append(face_resized.ravel())
+                y_labels.append(person_name)
+
+    X_faces = np.array(X_faces)
+    y_labels = np.array(y_labels)
+
+    # Apply PCA
+    n_components = min(len(X_faces), 100)
+    print(f"Performing PCA with {n_components} components...")
+    pca = PCA(n_components=n_components, whiten=True)
+    X_pca = pca.fit_transform(X_faces)
+    
+    # Plot eigenfaces
+    plot_eigenfaces(pca, h=64, w=64)
+
+    # Train classifier on PCA features
+    print("Training classifier...")
+    from sklearn.svm import SVC
+    clf = SVC(kernel='rbf', probability=True)
+    clf.fit(X_pca, y_labels)
+
+    # Save PCA and classifier
+    with open('face_recognition_model.pkl', 'wb') as f:
+        pickle.dump({
+            'pca': pca,
+            'classifier': clf,
+            'encoder': encoder
+        }, f)
+
+    print(f"Explained variance ratio: {pca.explained_variance_ratio_.sum():.3f}")
+    
+    # Save model
+    torch.save(model.state_dict(), './arcface_model.pth')
     return model
 
 def extract_feature_from_image(image, model):
-    preprocess = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((128, 128)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-    ])
-    image_tensor = preprocess(image).unsqueeze(0)
+    face_tensor = get_image_tensor([image])[0].unsqueeze(0)
     with torch.no_grad():
-        feature = model.forward_one(image_tensor)
-    return feature.cpu().numpy()
+        features = model(face_tensor)
+        features = F.normalize(features).cpu().numpy()
+    return features
 
 if __name__ == '__main__':
     node_dict = {'input':'data_1:0',
