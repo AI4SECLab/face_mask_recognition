@@ -90,10 +90,11 @@ class SiameseNetwork(nn.Module):
         self.eval()
         total_loss = 0
         all_metrics = []
-        
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         with torch.no_grad():
             for batch in test_loader:
                 anchor, positive, negative = batch
+                anchor, positive, negative = anchor.to(device), positive.to(device), negative.to(device)
                 ap_dist, an_dist = self(anchor, positive, negative)
                 loss = triplet_loss(ap_dist, an_dist, self.margin)
                 metrics = calculate_accuracy(ap_dist, an_dist)
