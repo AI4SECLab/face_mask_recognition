@@ -36,6 +36,8 @@ class SiameseEncoder(nn.Module):
         )
 
     def forward(self, x):
+        device = next(self.parameters()).device 
+        x = x.to(device)
         x = self.base_model(x)
         x = self.embedding(x)
         return F.normalize(x, p=2, dim=1)
@@ -90,12 +92,12 @@ class SiameseNetwork(nn.Module):
         self.eval()
         total_loss = 0
         all_metrics = []
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(device)
+        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.to(device)
         with torch.no_grad():
             for batch in test_loader:
                 anchor, positive, negative = batch
-                anchor, positive, negative = anchor.to(device), positive.to(device), negative.to(device)
+                # anchor, positive, negative = anchor.to(device), positive.to(device), negative.to(device)
                 ap_dist, an_dist = self(anchor, positive, negative)
                 loss = triplet_loss(ap_dist, an_dist, self.margin)
                 metrics = calculate_accuracy(ap_dist, an_dist)
