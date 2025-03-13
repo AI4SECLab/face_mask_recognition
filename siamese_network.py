@@ -91,6 +91,7 @@ class SiameseNetwork(nn.Module):
         total_loss = 0
         all_metrics = []
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(device)
         with torch.no_grad():
             for batch in test_loader:
                 anchor, positive, negative = batch
