@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import cv2
 import numpy as np
-from siamese_network import SiameseNetwork, triplet_loss
+from siamese_network import SiameseNetwork, triplet_loss, calculate_accuracy
 from torchvision import transforms
 import random
 from tqdm import tqdm
@@ -55,6 +55,7 @@ class TripletDataset(Dataset):
 def train_siamese(data_dir, num_epochs=50):
     # Setup device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
     
     # Create model and track best accuracy
     model = SiameseNetwork().to(device)
@@ -111,10 +112,26 @@ def train_siamese(data_dir, num_epochs=50):
         avg_loss = total_loss / len(train_loader)
         avg_metrics = np.mean(all_metrics, axis=0)
         
-        # Validation step
-        val_loss, val_metrics = model.evaluate(val_loader)
-        val_accuracy = val_metrics[0]
+        # Move model to eval mode and evaluate
+        model.eval()
+        val_loss = 0
+        val_metrics_list = []
         
+        with torch.no_grad():
+            for val_batch in val_loader:
+                val_anchor, val_positive, val_negative = [x.to(device) for x in val_batch]
+                ap_dist, an_dist = model(val_anchor, val_positive, val_negative)
+                val_batch_loss = triplet_loss(ap_dist, an_dist, model.margin)
+                val_batch_metrics = calculate_accuracy(ap_dist, an_dist)
+                
+                val_loss += val_batch_loss.item()
+                val_metrics_list.append(val_batch_metrics)
+        
+        val_loss = val_loss / len(val_loader)
+        val_metrics = np.mean(val_metrics_list, axis=0)
+        val_accuracy = val_metrics[0]
+
+        # Print metrics and save model
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         print(f"Train Loss: {avg_loss:.4f}, Train Accuracy: {avg_metrics[0]:.4f}")
         print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")

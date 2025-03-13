@@ -36,8 +36,7 @@ class SiameseEncoder(nn.Module):
         )
 
     def forward(self, x):
-        device = next(self.parameters()).device 
-        x = x.to(device)
+        # Remove device check since it will be handled by the parent module
         x = self.base_model(x)
         x = self.embedding(x)
         return F.normalize(x, p=2, dim=1)
@@ -124,17 +123,19 @@ def triplet_loss(ap_dist, an_dist, margin=1.0):
 
 def calculate_accuracy(ap_dist, an_dist):
     """
-    Calculate accuracy based on distances
-    Returns accuracy, mean distances and standard deviations
+    Calculate metrics for triplet network evaluation
+    Returns: (accuracy, positive mean, negative mean, positive std, negative std)
     """
     with torch.no_grad():
-        # Compute accuracy
-        accuracy = torch.mean((ap_dist < an_dist).float())
+        # Basic accuracy: percentage of times negative distance > positive distance
+        accuracy = torch.mean((an_dist > ap_dist).float())
         
-        # Get statistics
-        ap_mean = torch.mean(ap_dist)
-        an_mean = torch.mean(an_dist)
-        ap_std = torch.std(ap_dist)
-        an_std = torch.std(an_dist)
+        # Calculate mean distances
+        pos_mean = torch.mean(ap_dist)
+        neg_mean = torch.mean(an_dist)
         
-        return accuracy.item(), ap_mean.item(), an_mean.item(), ap_std.item(), an_std.item()
+        # Calculate standard deviations
+        pos_std = torch.std(ap_dist)
+        neg_std = torch.std(an_dist)
+        
+    return accuracy.item(), pos_mean.item(), neg_mean.item(), pos_std.item(), neg_std.item()
