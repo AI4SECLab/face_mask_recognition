@@ -8,6 +8,9 @@ import random
 from tqdm import tqdm
 from mask_train import face_detection, image_files_in_folder
 import os
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+from mask_detection import model_restore_from_pb
 
 class TripletDataset(Dataset):
     def __init__(self, data_dir, transform=None):
@@ -15,42 +18,95 @@ class TripletDataset(Dataset):
         self.person_to_images = {}
         self.people = []
         
-        # Load all images
-        for person in os.listdir(data_dir):
+        # Initialize face detector
+        print("Initializing face detector...")
+        self.pb_path = "./face_mask_detection.pb"
+        self.node_dict = {
+            'input': 'data_1:0',
+            'detection_bboxes': 'loc_branch_concat_1/concat:0',
+            'detection_scores': 'cls_branch_concat_1/concat:0'
+        }
+        self.sess, self.node_dict = model_restore_from_pb(self.pb_path, self.node_dict)
+        print("Face detector initialized.")
+        
+        # Load all images and detect faces
+        for person in tqdm(os.listdir(data_dir), desc="Processing people"):
             person_dir = os.path.join(data_dir, person)
             if os.path.isdir(person_dir):
-                self.person_to_images[person] = []
-                self.people.append(person)
+                faces = []
+                # Process each image
                 for img_path in image_files_in_folder(person_dir):
-                    self.person_to_images[person].append(img_path)
+                    try:
+                        img = cv2.imread(img_path)
+                        if img is None:
+                            continue
+                        face = face_detection(img, self.sess, self.node_dict)
+                        # print(face)
+                        if face is not None:
+                            faces.append({
+                                'path': img_path,
+                                'face': face
+                            })
+                    except Exception as e:
+                        print(f"Error processing {img_path}: {e}")
+                
+                # Only add person if they have at least 2 face images
+                if len(faces) >= 2:
+                    self.person_to_images[person] = faces
+                    self.people.append(person)
+                    print(f"Added {person} with {len(faces)} faces")
+                else:
+                    print(f"Skipping {person}: insufficient faces ({len(faces)})")
+        
+        if len(self.people) < 2:
+            raise ValueError("Need at least 2 people with 2+ images each")
+        
+        print(f"Dataset prepared with {len(self.people)} people")
+        for person in self.people:
+            print(f"{person}: {len(self.person_to_images[person])} images")
     
     def __len__(self):
         return sum(len(imgs) for imgs in self.person_to_images.values())
     
     def __getitem__(self, idx):
-        # Select anchor person
-        anchor_person = random.choice(self.people)
+        # Select anchor person with at least 2 images
+        while True:
+            anchor_person = random.choice(self.people)
+            if len(self.person_to_images[anchor_person]) >= 2:
+                break
+        
         # Select different person for negative
         negative_person = random.choice([p for p in self.people if p != anchor_person])
         
-        # Get images
+        # Get anchor image and make sure we can select a different one for positive
         anchor_img = random.choice(self.person_to_images[anchor_person])
-        positive_img = random.choice([img for img in self.person_to_images[anchor_person] if img != anchor_img])
+        positive_candidates = [img for img in self.person_to_images[anchor_person] if img != anchor_img]
+        
+        if not positive_candidates:
+            # Fallback: use same image with different augmentation
+            positive_img = anchor_img
+        else:
+            positive_img = random.choice(positive_candidates)
+            
         negative_img = random.choice(self.person_to_images[negative_person])
         
-        # Load and transform images
-        anchor = self.load_image(anchor_img)
-        positive = self.load_image(positive_img)
-        negative = self.load_image(negative_img)
+        # Get preprocessed faces
+        anchor = anchor_img['face']
+        positive = positive_img['face']
+        negative = negative_img['face']
+        
+        # Apply transforms
+        if self.transform:
+            anchor = self.transform(anchor)
+            positive = self.transform(positive)
+            negative = self.transform(negative)
         
         return anchor, positive, negative
-    
-    def load_image(self, path):
-        image = cv2.imread(path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        if self.transform:
-            image = self.transform(image)
-        return image
+
+    def __del__(self):
+        # Close TensorFlow session when done
+        if hasattr(self, 'sess'):
+            self.sess.close()
 
 def train_siamese(data_dir, num_epochs=50):
     # Setup device

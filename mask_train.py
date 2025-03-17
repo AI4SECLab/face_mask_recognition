@@ -73,7 +73,7 @@ def face_detection(image, sess, node_dict, conf_thresh=0.5):
         extend = 50
         face_crop = img_resized[ymin:ymax, xmin:xmax]
         return face_crop
-    
+
 from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.models import Model
 import warnings
@@ -193,86 +193,74 @@ def plot_eigenfaces(pca, h, w, n_components=8):
     plt.savefig('eigenfaces.png')
     plt.close()
 
+def extract_mask_features(image, sess, node_dict):
+    """Extract features from mask detection model's intermediate layer"""
+    tf_input = node_dict['input']
+
+    #Get the feature extraction layer
+    feature_layer = sess.graph.get_tensor_by_name('loc_4_reshape_1/Reshape:0')  # Thay đổi tên layer phù hợp
+    
+    # Preprocess image
+    img_resized = cv2.resize(image, (int(tf_input.shape[2]), int(tf_input.shape[1])))
+    img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+    img_resized = img_resized.astype('float32') / 255
+    
+    # Extract features
+    features = sess.run(feature_layer, feed_dict={tf_input: np.expand_dims(img_resized, axis=0)})
+    return features[0]  # Return first batch
+
 def train(training_dir, pb_path, node_dict):
     sess, node_dict = model_restore_from_pb(pb_path, node_dict)
     
-    # Load ArcFace model
-    encoder = LabelEncoder()
-    encoder.classes_ = np.array([d for d in os.listdir(training_dir) if os.path.isdir(os.path.join(training_dir, d))])
-    num_classes = len(encoder.classes_)
-    model = ArcMarginModel(num_classes=num_classes)
-    model.eval()
-    
-    # Save classes
-    np.save('./classes.npy', encoder.classes_)
-
-    # Save features for each person
-    if not os.path.exists('./reference_features'):
-        os.makedirs('./reference_features')
-
-    print("Extracting reference features:")
-    for person_name in tqdm(encoder.classes_):
-        person_dir = os.path.join(training_dir, person_name)
-        for img_path in image_files_in_folder(person_dir)[:1]:  # Use first image as reference
-            image = cv2.imread(img_path)
-            face = face_detection(image, sess, node_dict)
-            if face is not None:
-                # Extract features using ArcFace
-                face_tensor = get_image_tensor([face])[0].unsqueeze(0)
-                with torch.no_grad():
-                    features = model(face_tensor)
-                    features = F.normalize(features).cpu().numpy()
-                np.save(f'./reference_features/{person_name}.npy', features)
-                break
-
-    # Prepare data for PCA
-    print("Extracting features for PCA...")
-    X_faces = []
+    # Extract features for each person using mask detection model
+    print("Extracting features from mask detection model...")
+    X_features = []
     y_labels = []
-    for person_name in tqdm(encoder.classes_):
+    
+    for person_name in tqdm(os.listdir(training_dir)):
         person_dir = os.path.join(training_dir, person_name)
-        for img_path in image_files_in_folder(person_dir):
-            image = cv2.imread(img_path)
-            face = face_detection(image, sess, node_dict)
-            if face is not None:
-                # Convert to grayscale and resize
-                face_gray = cv2.cvtColor(face, cv2.COLOR_RGB2GRAY)
-                face_resized = cv2.resize(face_gray, (64, 64))
-                print(np.max(face_resized))
-                X_faces.append(face_resized.ravel())
-                y_labels.append(person_name)
-
-    X_faces = np.array(X_faces)
+        if os.path.isdir(person_dir):
+            for img_path in image_files_in_folder(person_dir):
+                try:
+                    image = cv2.imread(img_path)
+                    face = face_detection(image, sess, node_dict)
+                    if face is not None:
+                        # Extract features from mask detection model
+                        features = extract_mask_features(face, sess, node_dict)
+                        # print(features)
+                        # return
+                        # plt.imshow(face)
+                        # plt.show()
+                        # return
+                        X_features.append(features)
+                        y_labels.append(person_name)
+                except Exception as e:
+                    print(f"Error processing {img_path}: {e}")
+                    continue
+    
+    X_features = np.array(X_features)
+    X_features = X_features.reshape(X_features.shape[0], -1)
     y_labels = np.array(y_labels)
-
-    # Apply PCA
-    n_components = min(len(X_faces), 100)
-    print(f"Performing PCA with {n_components} components...")
-    pca = PCA(n_components=n_components, whiten=True)
-    X_pca = pca.fit_transform(X_faces)
     
-    # Plot eigenfaces
-    plot_eigenfaces(pca, h=64, w=64)
-
-    # Train classifier on PCA features
+    # Train classifier on extracted features
     print("Training classifier...")
-    from sklearn.svm import SVC
     clf = SVC(kernel='rbf', probability=True)
-    clf.fit(X_pca, y_labels)
-
-    # Save PCA and classifier
-    with open('face_recognition_model.pkl', 'wb') as f:
-        pickle.dump({
-            'pca': pca,
-            'classifier': clf,
-            'encoder': encoder
-        }, f)
-
-    print(f"Explained variance ratio: {pca.explained_variance_ratio_.sum():.3f}")
+    print(X_features.shape)
+    clf.fit(X_features, y_labels)
     
-    # Save model
-    torch.save(model.state_dict(), './arcface_model.pth')
-    return model
+    # Save classifier and encoder
+    encoder = LabelEncoder()
+    encoder.fit(y_labels)
+    
+    with open('face_classifier.pkl', 'wb') as f:
+        pickle.dump({
+            'classifier': clf,
+            'encoder': encoder,
+            'feature_shape': X_features.shape[1]
+        }, f)
+    
+    print("Training completed!")
+    return clf, encoder
 
 def extract_feature_from_image(image, model):
     face_tensor = get_image_tensor([image])[0].unsqueeze(0)
@@ -285,4 +273,5 @@ if __name__ == '__main__':
     node_dict = {'input':'data_1:0',
                 'detection_bboxes':'loc_branch_concat_1/concat:0',
                 'detection_scores':'cls_branch_concat_1/concat:0'}
-    train("./training_dataset", "./face_mask_detection.pb", node_dict)
+    # train("./training_dataset", "./face_mask_detection.pb", node_dict)
+    train("./dataset", "./face_mask_detection.pb", node_dict)

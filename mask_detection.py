@@ -193,224 +193,166 @@ import pickle
 # 	if(prob[0][result[0]]<=threshold):
 # 		return ([-1],prob[0][result[0]])
 # return (result[0],prob[0][result[0]])'''
-def preprocess_face(face_img, size=(224, 224)):
-    """Preprocess face for Siamese network"""
-    face = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-    face = cv2.resize(face, size)
-    face_tensor = torch.FloatTensor(face).permute(2, 0, 1).unsqueeze(0) / 255.0
-    return face_tensor
+def preprocess_face(face_img):
+    """Cải thiện tiền xử lý khuôn mặt"""
+    # Chuyển về RGB trước khi xử lý
+    face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+    
+    # Tăng độ tương phản
+    lab = cv2.cvtColor(face_rgb, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    l = clahe.apply(l)
+    lab = cv2.merge((l,a,b))
+    face_rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    
+    # Chuẩn hóa kích thước
+    face_rgb = cv2.resize(face_rgb, (224, 224))
+    
+    return face_rgb
 
 def mask_detection(is_2_write=False, save_path=None):
-    from mask_train import ArcMarginModel, get_image_tensor
-    import torch
-    import torch.nn.functional as F
-    
-    # Initialize encoder
-    encoder = LabelEncoder()
-    encoder.classes_ = np.load('./classes.npy')
-
-    # Load ArcFace model
-    num_classes = len(encoder.classes_)
-    model = ArcMarginModel(num_classes=num_classes)
-    model.load_state_dict(torch.load('./arcface_model.pth'))
-    model.eval()
-
-    # Load reference features
-    reference_features = {}
-    for person_name in encoder.classes_:
-        features_path = f'./reference_features/{person_name}.npy'
-        if os.path.exists(features_path):
-            reference_features[person_name] = np.load(features_path)
-
-    #----var
+    from mask_train import extract_mask_features, face_detection
+    # Initialize models
     pb_path = "face_mask_detection.pb"
     node_dict = {'input':'data_1:0',
                 'detection_bboxes':'loc_branch_concat_1/concat:0',
                 'detection_scores':'cls_branch_concat_1/concat:0'}
+    
+    # Load classifier
+    with open('face_classifier.pkl', 'rb') as f:
+        models = pickle.load(f)
+        clf = models['classifier']
+        encoder = models['encoder']
+    
+    # Initialize face detection model
+    sess, node_dict = model_restore_from_pb(pb_path, node_dict)
+    
     conf_thresh = 0.5
     iou_thresh = 0.4
     frame_count = 0
     FPS = "0"
-    #====anchors config
+    
+    # Initialize video
+    cap, height, width, writer = video_init(is_2_write=is_2_write, save_path=save_path)
+    
+    # Setup face detection
     feature_map_sizes = [[33, 33], [17, 17], [9, 9], [5, 5], [3, 3]]
     anchor_sizes = [[0.04, 0.056], [0.08, 0.11], [0.16, 0.22], [0.32, 0.45], [0.64, 0.72]]
     anchor_ratios = [[1, 0.62, 0.42]] * 5
+    anchors = generate_anchors(feature_map_sizes, anchor_sizes, anchor_ratios)
+    anchors_exp = np.expand_dims(anchors, axis=0)
     id2class = {0: 'Mask', 1: 'NoMask'}
 
-    #----video streaming init
-    cap, height, width, writer = video_init(is_2_write=is_2_write,save_path=save_path)
-
-    #----model init
-
-    #====generate anchors
-    anchors = generate_anchors(feature_map_sizes, anchor_sizes, anchor_ratios)
-    # for inference , the batch size is 1, the model output shape is [1, N, 4],
-    # so we expand dim for anchors to [1, anchor_num, 4]
-    anchors_exp = np.expand_dims(anchors, axis=0)
-
-    #====model restore from pb file
-    sess,node_dict = model_restore_from_pb(pb_path, node_dict)
-    tf_input = node_dict['input']
-    model_shape = tf_input.shape#[N,H,W,C]
-    print("model_shape = ", model_shape)
-    detection_bboxes = node_dict['detection_bboxes']
-    detection_scores = node_dict['detection_scores']
-
-    # Load PCA and classifier
-    with open('face_recognition_model.pkl', 'rb') as f:
-        models = pickle.load(f)
-        pca = models['pca']
-        clf = models['classifier']
-        encoder = models['encoder']
-
-    # Initialize siamese network and move to appropriate device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    siamese_model = SiameseNetwork()
-    siamese_model.load_state_dict(torch.load('siamese_model_best.pth'))
-    siamese_model.to(device)
-    siamese_model.eval()
-
-    # Load reference embeddings
-    reference_embeddings = {}
-    for person_name in os.listdir('./training_dataset'):
-        person_dir = os.path.join('./training_dataset', person_name)
-        if os.path.isdir(person_dir):
-            embeddings = []
-            for img_path in os.listdir(person_dir):
-                if img_path.endswith(('.jpg', '.png', '.jpeg')):
-                    img = cv2.imread(os.path.join(person_dir, img_path))
-                    face_tensor = preprocess_face(img)
-                    with torch.no_grad():
-                        embedding = siamese_model.get_embeddings(face_tensor.to(device))
-                    embeddings.append(embedding.cpu())
-            if embeddings:
-                # Average all embeddings for the person
-                reference_embeddings[person_name] = torch.mean(torch.stack(embeddings), dim=0)
-
-    while (cap.isOpened()):
-
-        #----get image
+    while cap.isOpened():
         ret, img = cap.read()
-
-        if ret:
-            #----image processing
-            img_resized = cv2.resize(img, (int(model_shape[2]), int(model_shape[1])))
-            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-            img_resized = img_resized.astype('float32')
-            img_resized /= 255
-
-            #----mask detection
-            y_bboxes_output, y_cls_output = sess.run([detection_bboxes, detection_scores],
-                                                     feed_dict={tf_input: np.expand_dims(img_resized, axis=0)})
-
-            #remove the batch dimension, for batch is always 1 for inference.
-            y_bboxes = decode_bbox(anchors_exp, y_bboxes_output)[0]
-            y_cls = y_cls_output[0]
-
-            # To speed up, do single class NMS, not multiple classes NMS.
-            bbox_max_scores = np.max(y_cls, axis=1)
-            bbox_max_score_classes = np.argmax(y_cls, axis=1)
-
-            # keep_idx is the alive bounding box after nms.
-            keep_idxs = single_class_non_max_suppression(y_bboxes,
-                                                        bbox_max_scores,
-                                                        conf_thresh=conf_thresh,
-                                                        iou_thresh=iou_thresh,
-                                                        )
-            #====draw bounding box
-            for idx in keep_idxs:
-                try:
-                    conf = float(bbox_max_scores[idx])
-                    class_id = bbox_max_score_classes[idx]
-                    bbox = y_bboxes[idx]
-                    # clip the coordinate, avoid the value exceed the image boundary.
-                    xmin = max(0, int(bbox[0] * width))
-                    ymin = max(0, int(bbox[1] * height))
-                    xmax = min(int(bbox[2] * width), width)
-                    ymax = min(int(bbox[3] * height), height)
-
-                    # Process detected face
-                    face = img[ymin:ymax, xmin:xmax]
-                    face_tensor = preprocess_face(face).to(device)
-                    
-                    # Get embedding
-                    with torch.no_grad():
-                        face_embedding = siamese_model.get_embeddings(face_tensor)
-
-                    # Find best match
-                    best_match = "Unknown"
-                    best_similarity = -1
-                    similarities = {}
-                    
-                    for person_name, ref_embedding in reference_embeddings.items():
-                        similarity = F.cosine_similarity(
-                            face_embedding, 
-                            ref_embedding.to(device).unsqueeze(0)
-                        ).item()
-                        similarities[person_name] = similarity
-                        
-                        if similarity > best_similarity:
-                            best_similarity = similarity
-                            best_match = person_name
-
-                    # Apply adaptive threshold
-                    threshold = 0.85  # Adjust based on your needs
-                    person_name = best_match if best_similarity > threshold else "Unknown"
-                    confidence = best_similarity
-
-                    # Display results
-                    color = (0, 255, 0) if class_id == 0 else (0, 0, 255)
-                    mask_status = "With Mask" if class_id == 0 else "No Mask"
-                    text = f"{mask_status} - {person_name}"
-                    if person_name != "Unknown":
-                        text += f" ({confidence:.2f})"
-                    
-                    cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
-                    cv2.putText(img, text, (xmin + 2, ymin - 2),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
-
-                    # Debug information
-                    if confidence > 0.5:  # Only print meaningful matches
-                        print(f"\nDetected face similarities:")
-                        for name, sim in sorted(similarities.items(), 
-                                              key=lambda x: x[1], reverse=True)[:3]:
-                            print(f"{name}: {sim:.3f}")
-                        print(f"Selected: {person_name} ({confidence:.3f})")
-
-                except Exception as e:
-                    print(f"Error: {e}")
-                    continue
-
-            #----FPS count
-            if frame_count == 0:
-                t_start = time.time()
-            frame_count += 1
-            if frame_count >= 10:
-                FPS = "FPS=%1f" % (10 / (time.time() - t_start))
-                frame_count = 0
-
-            cv2.putText(img, FPS, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-
-            #----image display
-            cv2.imshow("demo by AI4SEC", img)
-
-            #----image writing
-            if writer is not None:
-                writer.write(img)
-
-            #----'q' key pressed?
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        else:
-            print("get image failed")
+        if not ret:
             break
 
-    #----release
+        # Process image for face detection
+        img_resized = cv2.resize(img, (int(node_dict['input'].shape[2]), int(node_dict['input'].shape[1])))
+        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+        img_norm = img_rgb.astype('float32') / 255
+
+        # Detect faces and masks
+        y_bboxes_output, y_cls_output = sess.run(
+            [node_dict['detection_bboxes'], node_dict['detection_scores']], 
+            feed_dict={node_dict['input']: np.expand_dims(img_norm, axis=0)}
+        )
+
+        # Process detections
+        y_bboxes = decode_bbox(anchors_exp, y_bboxes_output)[0]
+        y_cls = y_cls_output[0]
+        bbox_max_scores = np.max(y_cls, axis=1)
+        bbox_max_score_classes = np.argmax(y_cls, axis=1)
+
+        keep_idxs = single_class_non_max_suppression(
+            y_bboxes, bbox_max_scores,
+            conf_thresh=conf_thresh,
+            iou_thresh=iou_thresh
+        )
+
+        # Process each detected face
+        for idx in keep_idxs:
+            try:
+                # conf = float(bbox_max_scores[idx])
+                class_id = bbox_max_score_classes[idx]
+                bbox = y_bboxes[idx]
+                
+                # Get face coordinates
+                xmin = max(0, int(bbox[0] * width))
+                ymin = max(0, int(bbox[1] * height))
+                xmax = min(int(bbox[2] * width), width)
+                ymax = min(int(bbox[3] * height), height)
+                
+                # Extract face and get features
+                # face = img[ymin:ymax, xmin:xmax]
+                # if face.size == 0:
+                #     continue
+                face = face_detection(img, sess, node_dict)
+                # import matplotlib.pyplot as plt
+                # print(face.shape)
+                # plt.imshow(face)
+                # plt.show()
+                # return
+                # Extract features using mask detection model
+                features = extract_mask_features(face, sess, node_dict)
+                features = features.reshape(1, -1)  # Reshape for classifier
+                # print(features)
+                # Get prediction and probability
+                pred_proba = clf.predict_proba(features)[0]
+                max_prob = np.max(pred_proba)
+                person_idx = np.argmax(pred_proba)
+                # print(pred_proba)
+                
+                # Apply confidence threshold
+                threshold = 0.75  # Adjust based on validation
+                print("Result", max_prob, encoder.inverse_transform([person_idx])[0])
+                if max_prob > threshold:
+                    person_name = encoder.inverse_transform([person_idx])[0]
+                    confidence = max_prob
+                else:
+                    person_name = "Unknown"
+                    confidence = max_prob
+
+                # Display results
+                color = (0, 255, 0) if class_id == 0 else (0, 0, 255)
+                mask_status = "With Mask" if class_id == 0 else "No Mask"
+                text = f"{mask_status} - {person_name}"
+                if person_name != "Unknown":
+                    text += f" ({confidence:.2f})"
+                
+                cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
+                cv2.putText(img, text, (xmin + 2, ymin - 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
+
+            except Exception as e:
+                print(f"Error processing face: {e}")
+                continue
+
+        # FPS counter
+        if frame_count == 0:
+            t_start = time.time()
+        frame_count += 1
+        if frame_count >= 10:
+            FPS = f"FPS={10 / (time.time() - t_start):.1f}"
+            frame_count = 0
+
+        cv2.putText(img, FPS, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+        cv2.imshow("Face Recognition", img)
+
+        if writer is not None:
+            writer.write(img)
+            
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # Cleanup
     cap.release()
     if writer is not None:
         writer.release()
     cv2.destroyAllWindows()
-
+    sess.close()
 
 if __name__ == "__main__":
     save_path = r".\demo.avi"
