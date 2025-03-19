@@ -130,9 +130,6 @@ def train(training_dir, pb_path, node_dict):
                     if face is not None:
                         # Extract features from mask detection model
                         features = extract_mask_features(face, sess, node_dict)
-                        # return
-                        # print(features)
-                        # return
                         # plt.imshow(face)
                         # plt.show()
                         # return
@@ -146,29 +143,25 @@ def train(training_dir, pb_path, node_dict):
     X_features = X_features.reshape(X_features.shape[0], -1)
     y_labels = np.array(y_labels)
     
-    # Train classifier on extracted features
-    print("Training classifier...")
-    clf = SVC(kernel='rbf', probability=True)
-    print(X_features.shape)
-    clf.fit(X_features, y_labels)
+    # Training classifier replaced with similarity measurement
+    print("Computing centroids for each person...")
+    person_embeddings = {}
+    for person in np.unique(y_labels):
+        idx = np.where(y_labels == person)[0]
+        centroid = np.mean(X_features[idx], axis=0)
+        person_embeddings[person] = centroid
+    # Set threshold for Euclidean distance (adjust as needed)
+    threshold = 0.7
     
-    # Save classifier and encoder
-    encoder = LabelEncoder()
-    encoder.fit(y_labels)
-    
-    y_pred = clf.predict(X_features)
-    accuracy = accuracy_score(y_labels, y_pred)
-    print(f"Accuracy: {accuracy * 100:.2f}%")
-
     with open('face_classifier.pkl', 'wb') as f:
         pickle.dump({
-            'classifier': clf,
-            'encoder': encoder,
+            'person_embeddings': person_embeddings,
+            'threshold': threshold,
             'feature_shape': X_features.shape[1]
         }, f)
     
     print("Training completed!")
-    return clf, encoder
+    return person_embeddings, threshold
 
 if __name__ == '__main__':
     node_dict = {'input':'data_1:0',
