@@ -29,7 +29,7 @@ def model_restore_from_pb(pb_path,node_dict):
 
 def video_init(is_2_write=False,save_path=None):
     writer = None
-    # cap = cv2.VideoCapture("rtsp://10.0.40.121/live/ch00_0", cv2.CAP_FFMPEG)
+    # cap = cv2.VideoCapture("rtsp://10.0.40.172/live/ch00_0", cv2.CAP_FFMPEG)
     cap = cv2.VideoCapture(0)
     height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)#default 640x480
     width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
@@ -306,7 +306,7 @@ def mask_detection(is_2_write=False, save_path=None):
                 # print(pred_proba)
                 
                 # Apply confidence threshold
-                threshold = 0.75  # Adjust based on validation
+                threshold = 0.8  # Adjust based on validation
                 print("Result", max_prob, encoder.inverse_transform([person_idx])[0])
                 if max_prob > threshold:
                     person_name = encoder.inverse_transform([person_idx])[0]
