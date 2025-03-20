@@ -153,19 +153,50 @@ def train(training_dir, pb_path, node_dict):
     # Set threshold for Euclidean distance (adjust as needed)
     threshold = 0.7
     
+    # NEW: Process masked dataset (assumed in "./mask_dataset")
+    print("Extracting features from masked dataset...")
+    mask_dataset_dir = "./MaskTheFace/data_masked"
+    X_features_mask = []
+    y_labels_mask = []
+    for person_name in tqdm(os.listdir(mask_dataset_dir)):
+        person_dir = os.path.join(mask_dataset_dir, person_name)
+        if os.path.isdir(person_dir):
+            for img_path in image_files_in_folder(person_dir):
+                image = cv2.imread(img_path)
+                face = face_detection(image, sess, node_dict)
+                if face is not None:
+                    features = extract_mask_features(face, sess, node_dict)
+                    X_features_mask.append(features)
+                    y_labels_mask.append(person_name)
+    if len(X_features_mask) > 0:
+        X_features_mask = np.array(X_features_mask).reshape(len(X_features_mask), -1)
+        y_labels_mask = np.array(y_labels_mask)
+        print("Computing centroids for masked faces...")
+        mask_person_embeddings = {}
+        for person in np.unique(y_labels_mask):
+            idx = np.where(y_labels_mask == person)[0]
+            centroid = np.mean(X_features_mask[idx], axis=0)
+            mask_person_embeddings[person] = centroid
+        mask_threshold = 0.75
+    else:
+        mask_person_embeddings = {}
+        mask_threshold = threshold
+    
     with open('face_classifier.pkl', 'wb') as f:
         pickle.dump({
             'person_embeddings': person_embeddings,
             'threshold': threshold,
+            'mask_person_embeddings': mask_person_embeddings,
+            'mask_threshold': mask_threshold,
             'feature_shape': X_features.shape[1]
         }, f)
     
     print("Training completed!")
-    return person_embeddings, threshold
+    return (person_embeddings, threshold), (mask_person_embeddings, mask_threshold)
 
 if __name__ == '__main__':
     node_dict = {'input':'data_1:0',
                 'detection_bboxes':'loc_branch_concat_1/concat:0',
                 'detection_scores':'cls_branch_concat_1/concat:0'}
     # train("./training_dataset", "./face_mask_detection.pb", node_dict)
-    train("./dataset", "./face_mask_detection.pb", node_dict)
+    train("./MaskTheFace/data", "./face_mask_detection.pb", node_dict)

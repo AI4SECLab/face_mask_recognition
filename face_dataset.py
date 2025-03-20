@@ -128,5 +128,5 @@ def create_dataset(username):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    username = input("Press Enter to continue...")
+    username = input("Press name to continue...")
     create_dataset(username)

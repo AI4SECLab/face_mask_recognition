@@ -8,7 +8,6 @@ import pickle
 from sklearn.preprocessing import LabelEncoder
 import os
 import torch
-from siamese_network import SiameseNetwork
 
 def model_restore_from_pb(pb_path,node_dict):
     config = tf.ConfigProto(log_device_placement=True,
@@ -213,19 +212,18 @@ def preprocess_face(face_img):
 
 def mask_detection(is_2_write=False, save_path=None):
     from mask_train import extract_mask_features, face_detection
-    # Initialize models
     pb_path = "face_mask_detection.pb"
     node_dict = {'input':'data_1:0',
                  'detection_bboxes':'loc_branch_concat_1/concat:0',
                  'detection_scores':'cls_branch_concat_1/concat:0'}
     
-    # Load similarity measurement model instead of SVC classifier and encoder
     with open('face_classifier.pkl', 'rb') as f:
         model = pickle.load(f)
         person_embeddings = model['person_embeddings']
         threshold = model['threshold']
+        mask_person_embeddings = model.get('mask_person_embeddings', {})
+        mask_threshold = model.get('mask_threshold', threshold)
     
-    # Initialize face detection model
     sess, node_dict = model_restore_from_pb(pb_path, node_dict)
     
     conf_thresh = 0.5
@@ -275,32 +273,37 @@ def mask_detection(is_2_write=False, save_path=None):
                 xmax = min(int(bbox[2] * width), width)
                 ymax = min(int(bbox[3] * height), height)
                 
-                # Use face_detection to re-extract the face crop
+                # Re-extract face crop and get features
                 face = face_detection(img, sess, node_dict)
-                # Extract features and reshape to a 1D vector
                 features = extract_mask_features(face, sess, node_dict).reshape(-1)
                 
-                # Similarity measurement: compare features against each person's centroid
+                # Choose embeddings based on mask status; class_id==0 means "Mask"
+                if class_id == 0:
+                    embeddings = mask_person_embeddings
+                    thres = mask_threshold
+                    mask_status = "With Mask"
+                else:
+                    embeddings = person_embeddings
+                    thres = threshold
+                    mask_status = "No Mask"
+                
                 recognized_person = "Unknown"
                 min_distance = float('inf')
-                for person, embedding in person_embeddings.items():
+                for person, embedding in embeddings.items():
                     distance = np.linalg.norm(features - embedding)
                     if distance < min_distance:
                         min_distance = distance
                         recognized_person = person
-                if min_distance > threshold:
+                if min_distance > thres:
                     recognized_person = "Unknown"
-                # Display results
-                color = (0, 255, 0) if class_id == 0 else (0, 0, 255)
-                mask_status = "With Mask" if class_id == 0 else "No Mask"
+                
+                color = (0, 255, 0) if mask_status != "No Mask" else (0, 0, 255)
                 text = f"{mask_status} - {recognized_person}"
                 if recognized_person != "Unknown":
                     text += f" ({min_distance:.2f})"
-
                 
                 cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
-                cv2.putText(img, text, (xmin + 2, ymin - 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
+                cv2.putText(img, text, (xmin + 2, ymin - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
             except Exception as e:
                 print(f"Error processing face: {e}")
                 continue
