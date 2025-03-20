@@ -1,0 +1,4 @@
+python .\manage.py runserver 5000
+
+Username: admin
+Password: admin
