@@ -1,4 +1,4 @@
- {% load static %}
+{% load static %}
  {% load crispy_forms_tags %}
 
 <!DOCTYPE html>
@@ -11,7 +11,68 @@
 
     <!-- Bootstrap CSS -->
     <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
-    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <style>
+        .form-container {
+            max-width: 500px;
+            margin: 2em auto;
+            padding: 2em;
+            border-radius: 15px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+        .table-container {
+            margin-top: 3em;
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .table thead {
+            background: linear-gradient(45deg, #2c3e50, #3498db);
+            color: white;
+        }
+        .btn-submit {
+            background: linear-gradient(45deg, #2c3e50, #3498db);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            transition: all 0.3s;
+        }
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        .navbar {
+            background: linear-gradient(45deg, #2c3e50, #3498db) !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 1rem 2rem;
+        }
+        .navbar-brand, .nav-link {
+            color: white !important;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .nav-link:hover {
+            transform: translateY(-2px);
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .attendance-image {
+            width: 50px;
+            height: 50px;
+            overflow: hidden;
+            border-radius: 50%;
+        }
+        .attendance-thumbnail {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .attendance-thumbnail:hover {
+            transform: scale(1.1);
+        }
+    </style>
 </head>
 <body>
 
@@ -42,81 +103,106 @@
 
 
 <div class="container">
-  <div style="width: 400px">
- <form method="POST" >
+  <div class="form-container bg-white">
+    <form method="POST">
       {% csrf_token %}
-      <fieldset class="form-group">
-        <legend class="border-bottom mb-4"> Chọn ngày </legend>
-        {{form| crispy}}
-      </fieldset>
-
-      <div class="form-group">
-        <button class="btn btn-outline-info" type="submit" value="Create"> Xác nhận</button>
+      <h3 class="text-center mb-4">Chọn ngày</h3>
+      {{form|crispy}}
+      <div class="text-center mt-4">
+        <button class="btn-submit" type="submit">Xác nhận</button>
       </div>
     </form>
-
-
-</div>
-{% if qs %}
-
-<table  class="table" style="margin-top: 5em; ">
-    <thead class="thead-dark">
-    <tr>
-        <th scope="col">Ngày</th>
-        
-        <th scope="col" >Người dùng</th>
-        <th scope="col">Present</th>
-        <th scope="col">Thời gian vào</th>
-        <th scope="col">Thời gian ra</th>
-        <th scope="col">Giờ</th>
-        <th scope="col">Giờ nghỉ</th>
-    </tr>
-</thead>
-<tbody>
-    {% for item in qs %}
-    <tr> 
-           <td>{{ item.date }}</td>
-        <td>{{ item.user.username}}</td>
-     {% if item.present %}
-        <td> P </td>
-        {% else %}
-        <td> A </td>
-        {% endif %}
-        {% if item.time_in %}
-        <td>{{ item.time_in }}</td>
-       {% else %}
-       <td> - </td>
-       {% endif %}
-         {% if item.time_out %}
-        <td>{{ item.time_out }}</td>
-       {% else %}
-       <td> - </td>
-       {% endif %}
-           <td> {{item.hours}}</td>
-           <td> {{item.break_hours}}</td>
-    </tr>
-    {% endfor %}
-</tbody>
-</table>
-
- <div class="card" style=" margin-top: 5em; margin-bottom: 10em;">
-  <img class="card-img-top" src="{% static 'recognition/img/attendance_graphs/hours_vs_employee/1.png'%}" alt="Card image cap">
-  <div class="card-body">
-    <p class="card-text" style="text-align: center;">Số giờ hoạt động mỗi ngày</p>
   </div>
-</div>
 
+  {% if qs %}
+  <div class="table-container">
+    <table class="table table-hover">
+      <thead>
+        <tr>
+          <th>Hình ảnh</th>
+          <th>Ngày</th>
+          <th>Người dùng</th>
+          <th>Present</th>
+          <th>Thời gian vào</th>
+          <th>Thời gian ra</th>
+          <th>Giờ</th>
+          <th>Giờ nghỉ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in qs %}
+        <tr> 
+          <td>
+            {% if item.image %}
+            <div class="attendance-image">
+              <img src="{% static 'recognition/img/attendance_captures/'|add:item.image %}" 
+                   class="rounded attendance-thumbnail"
+                   data-toggle="modal"
+                   data-target="#imageModal{{forloop.counter}}"
+                   alt="Attendance capture">
+            </div>
+            {% else %}
+              <span class="text-muted">-</span>
+            {% endif %}
+          </td>
+          <td>{{ item.date }}</td>
+          <td>{{ item.user.username}}</td>
+          {% if item.present %}
+          <td> P </td>
+          {% else %}
+          <td> A </td>
+          {% endif %}
+          {% if item.time_in %}
+          <td>{{ item.time_in }}</td>
+          {% else %}
+          <td> - </td>
+          {% endif %}
+          {% if item.time_out %}
+          <td>{{ item.time_out }}</td>
+          {% else %}
+          <td> - </td>
+          {% endif %}
+          <td> {{item.hours}}</td>
+          <td> {{item.break_hours}}</td>
+        </tr>
+        
+        <!-- Modal for each image -->
+        {% if item.image %}
+        <div class="modal fade" id="imageModal{{forloop.counter}}" tabindex="-1" role="dialog">
+          <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Chi tiết hình ảnh</h5>
+                <button type="button" class="close" data-dismiss="modal">&times;</button>
+              </div>
+              <div class="modal-body">
+                <img src="{% static 'recognition/img/attendance_captures/'|add:item.image %}" 
+                     class="img-fluid" 
+                     alt="Full size capture">
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 
+  <div class="card" style=" margin-top: 5em; margin-bottom: 10em;">
+    <img class="card-img-top" src="{% static 'recognition/img/attendance_graphs/hours_vs_employee/1.png'%}" alt="Card image cap">
+    <div class="card-body">
+      <p class="card-text" style="text-align: center;">Số giờ hoạt động mỗi ngày</p>
+    </div>
+  </div>
 
-
-{% endif %}
-{% if messages %}
-      {% for message in messages%}
-      <div class="alert alert-{{message.tags}}" > {{message}}
-      </div>
-      {%endfor %}
-
-    {%endif%}
+  {% if messages %}
+  {% for message in messages%}
+  <div class="alert alert-{{message.tags}}" > {{message}}
+  </div>
+  {%endfor %}
+  {%endif%}
 
 </div>
 

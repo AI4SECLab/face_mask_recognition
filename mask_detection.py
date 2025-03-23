@@ -209,13 +209,13 @@ def preprocess_face(face_img):
     face_rgb = cv2.resize(face_rgb, (224, 224))
     
     return face_rgb
-
-def mask_detection(is_2_write=False, save_path=None):
+import datetime
+def mask_detection(is_2_write=False, save_path=None, att_in=False):
     from mask_train import extract_mask_features, face_detection
     pb_path = "face_mask_detection.pb"
     node_dict = {'input':'data_1:0',
-                 'detection_bboxes':'loc_branch_concat_1/concat:0',
-                 'detection_scores':'cls_branch_concat_1/concat:0'}
+                'detection_bboxes':'loc_branch_concat_1/concat:0',
+                'detection_scores':'cls_branch_concat_1/concat:0'}
     
     with open('face_classifier.pkl', 'rb') as f:
         model = pickle.load(f)
@@ -239,7 +239,10 @@ def mask_detection(is_2_write=False, save_path=None):
     anchors = generate_anchors(feature_map_sizes, anchor_sizes, anchor_ratios)
     anchors_exp = np.expand_dims(anchors, axis=0)
     id2class = {0: 'Mask', 1: 'NoMask'}
-    
+    count = dict()
+    present = dict()
+    log_time = dict()
+    start = dict()
     while cap.isOpened():
         ret, img = cap.read()
         if not ret:
@@ -265,7 +268,7 @@ def mask_detection(is_2_write=False, save_path=None):
         )
 
         for idx in keep_idxs:
-            try:
+            # try:
                 class_id = bbox_max_score_classes[idx]
                 bbox = y_bboxes[idx]
                 xmin = max(0, int(bbox[0] * width))
@@ -290,6 +293,7 @@ def mask_detection(is_2_write=False, save_path=None):
                 recognized_person = "Unknown"
                 min_distance = float('inf')
                 for person, embedding in embeddings.items():
+                    count[person] = 0
                     distance = np.linalg.norm(features - embedding)
                     if distance < min_distance:
                         min_distance = distance
@@ -300,13 +304,24 @@ def mask_detection(is_2_write=False, save_path=None):
                 color = (0, 255, 0) if mask_status != "No Mask" else (0, 0, 255)
                 text = f"{mask_status} - {recognized_person}"
                 if recognized_person != "Unknown":
+                    pred = recognized_person
+                    if count[pred] == 0:
+                        start[pred] = time.time()
+                        count[pred] = count.get(pred,0) + 1
+                    if count[pred] == 4 and (time.time()-start[pred]) > 1.2:
+                        count[pred] = 0
+                    else:
+                        #if count[pred] == 4 and (time.time()-start) <= 1.5:
+                        present[pred] = True
+                        log_time[pred] = datetime.datetime.now()
+                        count[pred] = count.get(pred,0) + 1
                     text += f" ({min_distance:.2f})"
                 
                 cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
                 cv2.putText(img, text, (xmin + 2, ymin - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
-            except Exception as e:
-                print(f"Error processing face: {e}")
-                continue
+            # except Exception as e:
+            #     print(f"Error processing face: {e}")
+            #     continue
 
         if frame_count == 0:
             t_start = time.time()
@@ -329,6 +344,7 @@ def mask_detection(is_2_write=False, save_path=None):
         writer.release()
     cv2.destroyAllWindows()
     sess.close()
+    return present
 
 if __name__ == "__main__":
     save_path = r".\demo.avi"

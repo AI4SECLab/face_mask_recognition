@@ -1,4 +1,4 @@
- {% load static %}
+{% load static %}
 
 
 <!DOCTYPE html>
@@ -11,36 +11,84 @@
 
     <!-- Bootstrap CSS -->
     <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     
-
+    <style>
+        .stats-card {
+            border-radius: 15px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            transition: transform 0.3s;
+        }
+        .stats-card:hover {
+            transform: translateY(-5px;
+        }
+        .graph-card {
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin: 20px;
+            transition: all 0.3s;
+        }
+        .graph-card:hover {
+            box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+        }
+        .navbar {
+            background: linear-gradient(45deg, #2c3e50, #3498db) !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 1rem 2rem;
+        }
+        .navbar-brand, .nav-link {
+            color: white !important;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .nav-link:hover {
+            transform: translateY(-2px);
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .navbar-toggler {
+            border-color: rgba(255,255,255,0.5);
+        }
+        .navbar-toggler-icon {
+            background-image: url("data:image/svg+xml;charset=utf8,%3Csvg viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath stroke='rgba(255,255,255, 1)' stroke-width='2' stroke-linecap='round' stroke-miterlimit='10' d='M4 8h24M4 16h24M4 24h24'/%3E%3C/svg%3E");
+        }
+        .card-title {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+    </style>
 	
 </head>
  <body>
 
 
-  <nav class="navbar navbar-expand-lg navbar-light bg-light">
-  <a class="navbar-brand" href="{%url 'view-attendance-home' %}">Trang chủ thống kê</a>
-  <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-    <span class="navbar-toggler-icon"></span>
-  </button>
-  <div class="collapse navbar-collapse" id="navbarNav">
-    <ul class="navbar-nav">
-     
-      <li class="nav-item active">
-        <a class="nav-link" href="{%url 'view-attendance-employee' %}">Theo người dùng</a>
-      </li>
-        <li class="nav-item active">
-        <a class="nav-link" href="{% url 'view-attendance-date' %}">Theo ngày</a>
-      </li>
-
-
-
-         <li class="nav-item active" style="padding-left: 1440px">
-        <a class="nav-link" href="{% url 'dashboard' %}">Quay lại trang chủ quản trị</a>
-      </li>
-  
-    </ul>
-  </div>
+  <nav class="navbar navbar-expand-lg">
+    <a class="navbar-brand" href="{%url 'view-attendance-home' %}">
+        <i class="fas fa-chart-line mr-2"></i>Trang chủ thống kê
+    </a>
+    <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
+        <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav mr-auto">
+            <li class="nav-item active px-2">
+                <a class="nav-link" href="{%url 'view-attendance-employee' %}">
+                    <i class="fas fa-user mr-1"></i>Theo người dùng
+                </a>
+            </li>
+            <li class="nav-item active px-2">
+                <a class="nav-link" href="{% url 'view-attendance-date' %}">
+                    <i class="fas fa-calendar-alt mr-1"></i>Theo ngày
+                </a>
+            </li>
+        </ul>
+        <ul class="navbar-nav">
+            <li class="nav-item active">
+                <a class="nav-link" href="{% url 'dashboard' %}">
+                    <i class="fas fa-home mr-1"></i>Quay lại trang chủ
+                </a>
+            </li>
+        </ul>
+    </div>
 </nav>
 
 
@@ -51,33 +99,28 @@
 
  
 <h2> Thống kê trong ngày </h2>
- 	<div class="row" style="margin-left: 12em">
-<div class="card" style="width: 20em; background-color: #338044; text-align : center; margin-left: 5em; margin-top: 5em; color: white;">
-  <div class="card-body">
-    <h5 class="card-title"> <b>Số lượng người dùng</b></h5>
-    
-    <p class="card-text" style="padding-top: 1em; font-size: 28px;"> <b>{{total_num_of_emp }}</b></p>
-   
-  </div>
+ 	<div class="row justify-content-center" style="margin: 2em">
+    <div class="col-md-5">
+        <div class="stats-card card text-white" style="background: linear-gradient(45deg, #338044, #42a858);">
+            <div class="card-body text-center p-4">
+                <h5 class="card-title">Số lượng người dùng</h5>
+                <p class="display-4 mt-3">{{total_num_of_emp}}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-5">
+        <div class="stats-card card text-white" style="background: linear-gradient(45deg, #80335b, #a84271);">
+            <div class="card-body text-center p-4">
+                <h5 class="card-title">Số người dùng sử dụng mỗi ngày</h5>
+                <p class="display-4 mt-3">{{emp_present_today}}</p>
+            </div>
+        </div>
+    </div>
 </div>
-<div class="card" style="width: 20em; background-color: #80335b; text-align : center; margin-left: 5em; margin-top: 5em; color: white;">
-  <div class="card-body">
-    <h5 class="card-title"> <b>Số người dùng sử dụng mỗi ngày</b></h5>
-    
-    <p class="card-text" style="padding-top: 1em; font-size: 28px;"><b> {{emp_present_today }}</b></p>
-   
-  </div>
-</div>
-
-</div>
 
 
 </div>
 </div>
- 
-
-
-
  
 
 
@@ -90,28 +133,23 @@
   <div class="row" >
 <div class="col-md-6">
 <h2> Tuần trước </h2>
-    <div class="card" style="width: 50em;">
-  <img class="card-img-top" src="{% static 'recognition/img/attendance_graphs/last_week/1.png'%}" alt="Card image cap">
-  <div class="card-body">
-    <p class="card-text" style="text-align: center;">Số người dùng sử dụng mỗi ngày</p>
-  </div>
-</div>
-
-
-
-
-
+    <div class="graph-card card">
+        <h4 class="card-header bg-light">Tuần trước</h4>
+        <div class="card-body">
+            <img class="card-img-top" src="{% static 'recognition/img/attendance_graphs/last_week/1.png'%}" alt="Last week stats">
+            <p class="card-text text-center mt-3">Số người dùng sử dụng mỗi ngày</p>
+        </div>
+    </div>
 </div>
 <div class="col-md-6">
   <h2> Tuần này </h2>
- <div class="card" style="width: 50em;">
-  <img class="card-img-top" src="{% static 'recognition/img/attendance_graphs/this_week/1.png'%}" alt="Card image cap">
-  <div class="card-body">
-    <p class="card-text" style="text-align: center;">Số người dùng sử dụng mỗi ngày</p>
-  </div>
-</div>
-
-
+    <div class="graph-card card">
+        <h4 class="card-header bg-light">Tuần này</h4>
+        <div class="card-body">
+            <img class="card-img-top" src="{% static 'recognition/img/attendance_graphs/this_week/1.png'%}" alt="This week stats">
+            <p class="card-text text-center mt-3">Số người dùng sử dụng mỗi ngày</p>
+        </div>
+    </div>
 </div>
 </div>
 </div>
@@ -128,4 +166,3 @@
  </body>
  </html>
 
- 

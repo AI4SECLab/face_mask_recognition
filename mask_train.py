@@ -114,7 +114,7 @@ def extract_mask_features(image, sess, node_dict):
 from facenet_pytorch import InceptionResnetV1
 facenet_model = InceptionResnetV1(pretrained='vggface2').eval()
 
-def train(training_dir, pb_path, node_dict):
+def __train(training_dir, pb_path, mask_dataset_dir, node_dict):
     sess, node_dict = model_restore_from_pb(pb_path, node_dict)
     # Extract features for each person using mask detection model
     print("Extracting features from mask detection model...")
@@ -155,7 +155,7 @@ def train(training_dir, pb_path, node_dict):
     
     # NEW: Process masked dataset (assumed in "./mask_dataset")
     print("Extracting features from masked dataset...")
-    mask_dataset_dir = "./MaskTheFace/data_masked"
+    # mask_dataset_dir = "./MaskTheFace/data_masked"
     X_features_mask = []
     y_labels_mask = []
     for person_name in tqdm(os.listdir(mask_dataset_dir)):
@@ -199,4 +199,4 @@ if __name__ == '__main__':
                 'detection_bboxes':'loc_branch_concat_1/concat:0',
                 'detection_scores':'cls_branch_concat_1/concat:0'}
     # train("./training_dataset", "./face_mask_detection.pb", node_dict)
-    train("./MaskTheFace/data", "./face_mask_detection.pb", node_dict)
+    __train("./MaskTheFace/data", "./face_mask_detection.pb","./MaskTheFace/data_masked", node_dict)
