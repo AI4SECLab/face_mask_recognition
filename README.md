@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 1. To train the model:
 ```bash
-python mask_train.py --dataset path/to/dataset
+python mask_train.py
 ```
 
 2. To run face recognition:
