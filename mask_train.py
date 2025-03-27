@@ -88,7 +88,6 @@ def get_image_tensor(images):
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-
     # Apply preprocess
     image_tensor = torch.stack([preprocess(image) for image in images])
 
@@ -106,7 +105,6 @@ def extract_mask_features(image, sess, node_dict):
         # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     ])
     image_tensor = preprocess(image).unsqueeze(0)
-
     with torch.no_grad():  # Disable gradient computation
         embedding = facenet_model(image_tensor).squeeze().detach().cpu().numpy()  # Detach and convert to NumPy
     return embedding  # Return first batch
