@@ -3,7 +3,7 @@ training_dataset/
 *.sav
 *.pth
 *.npy
-*.png
+*.jpg
 *.pb
 *.pkl
 # Byte-compiled / optimized / DLL files

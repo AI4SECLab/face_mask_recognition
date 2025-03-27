@@ -8,6 +8,7 @@ import pickle
 from sklearn.preprocessing import LabelEncoder
 import os
 import torch
+import datetime
 
 def model_restore_from_pb(pb_path,node_dict):
     config = tf.ConfigProto(log_device_placement=True,
@@ -243,6 +244,9 @@ def mask_detection(is_2_write=False, save_path=None, att_in=False):
     present = dict()
     log_time = dict()
     start = dict()
+    image_save_dir = "./recognition/static/recognition/img/attendance_captures"
+    os.makedirs(image_save_dir, exist_ok=True)
+    attendance_images = {}  # Store image filenames for each person
     while cap.isOpened():
         ret, img = cap.read()
         if not ret:
@@ -268,18 +272,16 @@ def mask_detection(is_2_write=False, save_path=None, att_in=False):
         )
 
         for idx in keep_idxs:
-            # try:
+            try:
                 class_id = bbox_max_score_classes[idx]
                 bbox = y_bboxes[idx]
                 xmin = max(0, int(bbox[0] * width))
                 ymin = max(0, int(bbox[1] * height))
                 xmax = min(int(bbox[2] * width), width)
                 ymax = min(int(bbox[3] * height), height)
-                
                 # Re-extract face crop and get features
                 face = face_detection(img, sess, node_dict)
                 features = extract_mask_features(face, sess, node_dict).reshape(-1)
-                
                 # Choose embeddings based on mask status; class_id==0 means "Mask"
                 if class_id == 0:
                     embeddings = mask_person_embeddings
@@ -289,7 +291,6 @@ def mask_detection(is_2_write=False, save_path=None, att_in=False):
                     embeddings = person_embeddings
                     thres = threshold
                     mask_status = "No Mask"
-                
                 recognized_person = "Unknown"
                 min_distance = float('inf')
                 for person, embedding in embeddings.items():
@@ -300,7 +301,6 @@ def mask_detection(is_2_write=False, save_path=None, att_in=False):
                         recognized_person = person
                 if min_distance > thres:
                     recognized_person = "Unknown"
-                
                 color = (0, 255, 0) if mask_status != "No Mask" else (0, 0, 255)
                 text = f"{mask_status} - {recognized_person}"
                 if recognized_person != "Unknown":
@@ -308,20 +308,32 @@ def mask_detection(is_2_write=False, save_path=None, att_in=False):
                     if count[pred] == 0:
                         start[pred] = time.time()
                         count[pred] = count.get(pred,0) + 1
+                        # Save face image when first recognized
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        img_filename = f"{recognized_person}_{timestamp}.jpg"
+                        img_path = os.path.join(image_save_dir, img_filename)
+                        # Convert and save face image
+                        face_to_save = cv2.cvtColor(face * 255, cv2.COLOR_RGB2BGR)
+                        print(img_path)
+                        cv2.imwrite(img_path, face_to_save)
+                        # Store image filename in attendance record
+                        attendance_images[pred] = img_filename
                     if count[pred] == 4 and (time.time()-start[pred]) > 1.2:
                         count[pred] = 0
                     else:
-                        #if count[pred] == 4 and (time.time()-start) <= 1.5:
                         present[pred] = True
-                        log_time[pred] = datetime.datetime.now()
+                        log_time[pred] = {
+                            'time': datetime.datetime.now(),
+                            'image': attendance_images.get(pred, None)  # Include image filename in log
+                        }
                         count[pred] = count.get(pred,0) + 1
                     text += f" ({min_distance:.2f})"
                 
                 cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
                 cv2.putText(img, text, (xmin + 2, ymin - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color)
-            # except Exception as e:
-            #     print(f"Error processing face: {e}")
-            #     continue
+            except Exception as e:
+                print(f"Error processing face: {e}")
+                continue
 
         if frame_count == 0:
             t_start = time.time()
@@ -344,7 +356,7 @@ def mask_detection(is_2_write=False, save_path=None, att_in=False):
         writer.release()
     cv2.destroyAllWindows()
     sess.close()
-    return present
+    return present, log_time
 
 if __name__ == "__main__":
     save_path = r".\demo.avi"
